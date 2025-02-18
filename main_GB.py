@@ -472,10 +472,14 @@ if __name__ == "__main__":
     
     
     #############################
-            
+    
     cost_results = cost_check(model, multinet, systemData)
     
+    save_generation_results(model, selected_players, multinet, systemData, output_folder="Output")
+    
     save_simulation_results(model, genCapacities, multinet, cost_results, output_folder="Output")
+
+
 
     
     

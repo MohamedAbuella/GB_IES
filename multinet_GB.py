@@ -820,5 +820,10 @@ if __name__ == "__main__":
     generation_by_type = generation.groupby('type')['p_mw'].sum()
     generation_by_type
     generation_by_type.sum()
+
     
-    plot_generation_bar(generation_by_type, output_folder="Output")
+    save_opgf_generations(multinet, systemData, output_folder="Output")
+
+
+
+    

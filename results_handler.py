@@ -134,24 +134,102 @@ def save_simulation_results(model, genCapacities, multinet, cost_results, output
     return output_path
 
 
-def plot_generation_bar(generation_by_type, output_folder="Output"):
 
-    # Ensure output folder exists
+def save_opgf_generations(multinet, systemData, output_folder="Output"):
+
     os.makedirs(output_folder, exist_ok=True)
-    output_path = os.path.join(output_folder)
 
-    # Plot settings
+    # OPGF Generation Results
+    opgf_gens = pd.DataFrame({
+        'Generation (MW)': multinet.nets['power'].res_gen['p_mw'].copy(),
+        'Type': systemData['Players']['type']
+    })
+
+    opgf_gens_grouped = opgf_gens.groupby('Type', as_index=False).sum()
+    opgf_gens_grouped = opgf_gens_grouped.sort_values(by="Generation (MW)", ascending=False)  # Sort
+
+    # Save results to an Excel file
+    output_path = os.path.join(output_folder, "OPGF_generation_results.xlsx")
+    opgf_gens_grouped.to_excel(output_path, sheet_name="OPGF Model", index=False)
+
+    # Create and save a sorted bar plot
     plt.figure(figsize=(12, 6))
-    generation_by_type.sort_values(ascending=False).plot(kind='bar', color='royalblue', edgecolor='black')
-
-    # Labels and title
+    plt.bar(opgf_gens_grouped["Type"], opgf_gens_grouped["Generation (MW)"], color='blue', zorder=2)
     plt.xlabel("Generation Type")
-    plt.ylabel("Power Output (MW)")
-    plt.title("Electricity Generation by Type")
-    plt.xticks(rotation=45, ha='right')  # Rotate labels for readability
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.ylabel("Generation (MW)")
+    plt.title("OPGF Model Generation")
+    plt.xticks(rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--', alpha=0.6, zorder=0)  # Background grid
 
-    # Save the figure
-    plt.savefig(output_path+'/'+'Fig_generation_plot.png', dpi=300, bbox_inches="tight")
-    plt.close()  # Close the plot to free memory
+    plt.tight_layout()
+
+    # Save figure
+    fig_path = os.path.join(output_folder, "Fig_OPGF_only_gens.png")
+    plt.savefig(fig_path, dpi=360)
+    # plt.close()
+
+
+
+
+def save_generation_results(model, selected_players, multinet, systemData, output_folder="Output"):
+
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    # OPGF Generation Results
+    opgf_gens = pd.DataFrame({
+        'Generation (MW)': multinet.nets['power'].res_gen['p_mw'].copy(),
+        'Type': systemData['Players']['type']
+    })
+
+    opgf_gens_grouped = opgf_gens.groupby('Type', as_index=False).sum()
+    opgf_gens_grouped = opgf_gens_grouped.sort_values(by="Generation (MW)", ascending=False)  # Sort
+
+    # GT Generation Results
+    genCapacities = model.q.extract_values()
+    gt_gens = pd.DataFrame.from_dict(genCapacities, orient='index', columns=['Generation (MW)'])
+    gt_gens['Type'] = systemData['Players']['type'][selected_players].values
+
+    gt_gens_grouped = gt_gens.groupby('Type', as_index=False).sum()
+    gt_gens_grouped = gt_gens_grouped.sort_values(by="Generation (MW)", ascending=False)  # Sort
+
+    # Save results to an Excel file with two sheets
+    output_path = os.path.join(output_folder, "Generation_results.xlsx")
+    with pd.ExcelWriter(output_path) as writer:
+        gt_gens_grouped.to_excel(writer, sheet_name="GT Model", index=False)
+        opgf_gens_grouped.to_excel(writer, sheet_name="OPGF Model", index=False)
+
+    # Create and save a sorted bar plot for OPGF
+    plt.figure(figsize=(12, 6))
+    plt.bar(opgf_gens_grouped["Type"], opgf_gens_grouped["Generation (MW)"], color='blue', zorder=2)
+    plt.xlabel("Generation Type")
+    plt.ylabel("Generation (MW)")
+    plt.title("OPGF Model Generation")
+    plt.xticks(rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--', alpha=0.6, zorder=0)  # Background grid
+
+    plt.tight_layout()
+
+    # Save figure
+    fig_opgf_path = os.path.join(output_folder, "Fig_main_OPGF_gens.png")
+    plt.savefig(fig_opgf_path, dpi=360)
+    # plt.close()
+
+    # Create and save a sorted bar plot for GT Model
+    plt.figure(figsize=(12, 6))
+    plt.bar(gt_gens_grouped["Type"], gt_gens_grouped["Generation (MW)"], color='red', zorder=2)
+    plt.xlabel("Generation Type")
+    plt.ylabel("Generation (MW)")
+    plt.title("GT Model Generation")
+    plt.xticks(rotation=45, ha="right")
+    plt.grid(axis='y', linestyle='--', alpha=0.6, zorder=0)  # Background grid
+
+    plt.tight_layout()
+
+    # Save figure
+    fig_gt_path = os.path.join(output_folder, "Fig_main_GT_gens.png")
+    plt.savefig(fig_gt_path, dpi=360)
+    # plt.close()
+
+
 
