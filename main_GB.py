@@ -296,29 +296,6 @@ def cost_calc(model):
     return sum(pyoen.value(model.q[tech] * model.c[tech]) for tech in model.p)
 
 
-# def cost_check(model, multinet, systemData):
-#     cost_GT = cost_calc(model)
-#     players = systemData['Players']
-
-#     # CO2 emissions for GT Model
-#     emission_GT = sum(pyoen.value(model.q[tech] * model.emis[tech]) for tech in model.p)
-#     co2_cost_GT = emission_GT * pyoen.value(model.CO2)
-
-#     # CO2 emissions for OPGF Model
-#     emission_OPGF = sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['emissions'][selected_players])
-#     co2_cost_OPGF = emission_OPGF * pyoen.value(model.CO2)
-
-#     # Emission cost calculation
-#     emissionCost = (emission_OPGF +
-#                     sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * pyoen.value(model.CO2) * 0.320)
-
-#     cost_OPGF = (sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['costs'][selected_players]) +
-#                  sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * 85 +
-#                  (multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True) * (39.41 * 3600) / 1000) * 110 +
-#                  emissionCost)
-
-#     return cost_GT, cost_OPGF, emission_GT, co2_cost_GT, emission_OPGF, co2_cost_OPGF
-
 
 def cost_check(model, multinet, systemData):
     cost_GT = cost_calc(model)
