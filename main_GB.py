@@ -12,7 +12,9 @@ import pyomo.environ as pyoen
 from pyomo.environ import *
 import pyomo.mpec as pyompec
 from pyomo.opt import SolverFactory
+from results_handler import *
 from multinet_GB import *
+
 
 import warnings
 warnings.filterwarnings('ignore')  # Ignores all warnings
@@ -294,6 +296,30 @@ def cost_calc(model):
     return sum(pyoen.value(model.q[tech] * model.c[tech]) for tech in model.p)
 
 
+# def cost_check(model, multinet, systemData):
+#     cost_GT = cost_calc(model)
+#     players = systemData['Players']
+
+#     # CO2 emissions for GT Model
+#     emission_GT = sum(pyoen.value(model.q[tech] * model.emis[tech]) for tech in model.p)
+#     co2_cost_GT = emission_GT * pyoen.value(model.CO2)
+
+#     # CO2 emissions for OPGF Model
+#     emission_OPGF = sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['emissions'][selected_players])
+#     co2_cost_OPGF = emission_OPGF * pyoen.value(model.CO2)
+
+#     # Emission cost calculation
+#     emissionCost = (emission_OPGF +
+#                     sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * pyoen.value(model.CO2) * 0.320)
+
+#     cost_OPGF = (sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['costs'][selected_players]) +
+#                  sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * 85 +
+#                  (multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True) * (39.41 * 3600) / 1000) * 110 +
+#                  emissionCost)
+
+#     return cost_GT, cost_OPGF, emission_GT, co2_cost_GT, emission_OPGF, co2_cost_OPGF
+
+
 def cost_check(model, multinet, systemData):
     cost_GT = cost_calc(model)
     players = systemData['Players']
@@ -314,8 +340,15 @@ def cost_check(model, multinet, systemData):
                  sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * 85 +
                  (multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True) * (39.41 * 3600) / 1000) * 110 +
                  emissionCost)
-
-    return cost_GT, cost_OPGF, emission_GT, co2_cost_GT, emission_OPGF, co2_cost_OPGF
+    
+    return {
+        "cost_GT": cost_GT,
+        "cost_OPGF": cost_OPGF,
+        "emission_GT": emission_GT,
+        "co2_cost_GT": co2_cost_GT,
+        "emission_OPGF": emission_OPGF,
+        "co2_cost_OPGF": co2_cost_OPGF
+           }
 
 
 
@@ -332,26 +365,6 @@ def update_GT(year, scenario, multinet, systemData):
 
 
 
-def format_value(value, unit_type="energy"):
-    """
-    Format numerical values based on unit type.
-    
-    Parameters:
-    - value (float): The numerical value to format.
-    - unit_type (str): Type of unit ("energy", "currency", or "emissions").
-    
-    Returns:
-    - str: Formatted string with the appropriate unit.
-    """
-    if unit_type == "energy":  # Convert MW to GWh
-        return f"{value / 1e3:.2f} GWh"
-    elif unit_type == "currency":  # Format as GBP (£)
-        return f"{value:,.2f} £"
-    elif unit_type == "emissions":  # Format CO2 emissions in tonnes
-        return f"{value:.2f} tonnes"
-    else:
-        return f"{value:.2f}"
-    
     
 
 if __name__ == "__main__":
@@ -459,31 +472,10 @@ if __name__ == "__main__":
     
     
     #############################
-        
-    total_demand = model.Q_e
-    total_gen_gtm = genCapacities[0].sum()
-    total_gen_opf = sum(multinet['nets']['power']['res_gen']['p_mw'])
+            
+    cost_results = cost_check(model, multinet, systemData)
     
-    cost_GT, cost_OPGF, emission_GT, co2_cost_GT, emission_OPGF, co2_cost_OPGF = cost_check(model, multinet, systemData)
-    
-    # Print formatted results
-    print('')
-    print(f"Total Demand: {format_value(total_demand, 'energy')}")
-    print(f"Total Generation GTM: {format_value(total_gen_gtm, 'energy')}")
-    print(f"Total Generation OPF: {format_value(total_gen_opf, 'energy')}")
-    
-    print(f"Total cost GT: {format_value(cost_GT, 'currency')}")
-    print(f"Total cost OPGF: {format_value(cost_OPGF, 'currency')}")
-    print(f"Cost difference (GT - OPGF): {format_value(cost_GT - cost_OPGF, 'currency')}")
-    
-    print(f"CO2 Cost (GT Model): {format_value(co2_cost_GT, 'currency')}")
-    print(f"CO2 Cost (OPGF Model): {format_value(co2_cost_OPGF, 'currency')}")
-    
-    print(f"CO2 Emissions (GT Model): {format_value(emission_GT, 'emissions')}")
-    print(f"CO2 Emissions (OPGF Model): {format_value(emission_OPGF, 'emissions')}")
+    save_simulation_results(model, genCapacities, multinet, cost_results, output_folder="Output")
 
-    
-    
-    
     
     

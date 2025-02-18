@@ -10,6 +10,8 @@ import pandapipes as ppipes
 import pandapower as ppower
 import pandapower.converter as pc
 import matplotlib.pyplot as plt
+
+# Libraries for parallel processing
 from multiprocessing import Process, Pool
 import multiprocessing
 from joblib import Parallel, delayed
@@ -24,7 +26,7 @@ import pulp as lp
 import time
 import os
 
-
+from results_handler import *
 from geopy.distance import geodesic  # For calculating distances between coordinates
 
 #start_time = time.time()
@@ -389,11 +391,11 @@ def coupling_g2g(net_power, net_gas, net_hyd, multinet, systemData):
                 power_bus = region_to_bus[region]
                 # Compute electricity demand for the CCS technology 
                 if sheet_name == "ATRCCS":
-                    # power_CCS_mw = capacity_gw * 0.2 
+                    # power_CCS_mw = input_capacity_mw * 0.2 
                     power_CCS_mw = demand_h_all[power_bus] * 0.2 
                     
                 elif sheet_name == "BECCS":
-                    # power_CCS_mw = capacity_gw * 0.3
+                    # power_CCS_mw = input_capacity_mw * 0.3
                     power_CCS_mw = demand_h_all[power_bus] * 0.3
                           
                 else:
@@ -666,50 +668,6 @@ def intital_multinet(time_steps,  systemData):
 
 
 
-def format_results(results, objective):
-    
-    formatted_results = {}
-    
-    [results.pop(key, None) for key in ["Maximum generation capacity", "Losses"]]
-    
-    
-    for key, value in results.items():
-        if abs(value) >= 1e6:  # Convert to GW if >= 1,000,000 MW
-            formatted_results[key] = f"{value / 1e3:.2f} GW"
-        elif abs(value) >= 1e3:  # Convert to GWh if >= 1,000 MW
-            formatted_results[key] = f"{value / 1e3:.2f} GWh"
-        else:  # Keep in MWh if < 1,000 MW
-            formatted_results[key] = f"{value:.2f} MWh"
-
-    # Add formatted objective
-    formatted_results["Objective"] = f"{objective:,.2f} £"
-
-    return formatted_results
-
-
-
-def plot_generation_bar(generation_by_type, output_folder="Output"):
-
-    # Ensure output folder exists
-    os.makedirs(output_folder, exist_ok=True)
-    output_path = os.path.join(output_folder)
-
-    # Plot settings
-    plt.figure(figsize=(12, 6))
-    generation_by_type.sort_values(ascending=False).plot(kind='bar', color='royalblue', edgecolor='black')
-
-    # Labels and title
-    plt.xlabel("Generation Type")
-    plt.ylabel("Power Output (MW)")
-    plt.title("Electricity Generation by Type")
-    plt.xticks(rotation=45, ha='right')  # Rotate labels for readability
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-
-    # Save the figure
-    plt.savefig(output_path+'/'+'generation_plot.png', dpi=300, bbox_inches="tight")
-    plt.close()  # Close the plot to free memory
-
-
 
 def choose_scenario_from_list(options_dict, choice):
     """
@@ -810,13 +768,12 @@ if __name__ == "__main__":
     print()
 
 
-
     results = {        
         "Maximum generation capacity": sum(multinet.nets['power'].gen['max_p_mw']),
         "Total Generation": sum(multinet.nets['power'].res_gen['p_mw'])+sum(multinet.nets['power'].res_sgen['p_mw']),
         "FC Generation": sum(multinet.nets['power'].res_sgen['p_mw']),
         "Other Generations": sum(multinet.nets['power'].res_gen['p_mw']),
-
+    
         "Total Load": sum(multinet.nets['power'].res_load['p_mw']),
         
         "Losses": sum(multinet.nets['power'].res_line['pl_mw']),
@@ -826,33 +783,33 @@ if __name__ == "__main__":
         
         "External grid": multinet.nets['power'].res_ext_grid['p_mw'][0],
         "G2G Gas Demand": multinet.nets['gas'].res_sink['mdot_kg_per_s'][:34].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
-
+    
         "Total H2 Demand": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
         "H2 Consumption": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'][:14].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
         "H2 G2P Demand": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'][14:].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
-
+    
         "Total H2 Supply": multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
         "P2G H2 Supply": multinet.nets['hydrogen'].res_source['mdot_kg_per_s'][0:51].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
         "G2G H2 Supply":multinet.nets['hydrogen'].res_source['mdot_kg_per_s'][51:].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
         "H2 external": sum(multinet.nets['hydrogen'].res_ext_grid['mdot_kg_per_s'])*(energy_hydrogen*3600)/1e3
     }
     
-   
+    
     # from IPython.display import display
     # display(results)
     
-
+    
     # Print formatted results 
     formatted_results = format_results(results, obj_OPGF)
     for key, value in formatted_results.items():
         print(f"{key}: {value}")    
-
-
+    
+    
     print("\nSelected Scenarios:")
     for key, value in Scenarios.items():
         print(f"{key}: {value}")
-
-
+    
+    
     # Group by 'type' and sum the numeric columns
     ele_gens_grouped = ele_gens.groupby('type', as_index=False).sum()
     ele_gens_grouped.sum()
@@ -863,5 +820,5 @@ if __name__ == "__main__":
     generation_by_type = generation.groupby('type')['p_mw'].sum()
     generation_by_type
     generation_by_type.sum()
-
+    
     plot_generation_bar(generation_by_type, output_folder="Output")
