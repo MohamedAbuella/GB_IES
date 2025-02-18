@@ -9,8 +9,7 @@ Created on Mon Jan 27 06:05:41 2025
 import pandapipes as ppipes
 import pandapower as ppower
 import pandapower.converter as pc
-import matplotlib.pyplot as matplot
-# Libraries for parallel processing
+import matplotlib.pyplot as plt
 from multiprocessing import Process, Pool
 import multiprocessing
 from joblib import Parallel, delayed
@@ -23,6 +22,8 @@ import pandas as pd
 import numpy as np
 import pulp as lp
 import time
+import os
+
 
 from geopy.distance import geodesic  # For calculating distances between coordinates
 
@@ -30,7 +31,8 @@ from geopy.distance import geodesic  # For calculating distances between coordin
 
 # importing the major 
 from pandapipes.multinet.create_multinet import create_empty_multinet, add_net_to_multinet
-from pandapipes.multinet.control.controller.multinet_control import P2GControlMultiEnergy, G2PControlMultiEnergy, GasToGasConversion
+from pandapipes.multinet.control.controller.multinet_control import P2GControlMultiEnergy, G2PControlMultiEnergy, GasToGasConversion, coupled_p2g_const_control
+
 from pandapipes.multinet.control.run_control_multinet import run_control
 
 import warnings
@@ -41,14 +43,22 @@ def data_import(Scenarios):
     path = r"Refined FES scenario inputs/"
     GBdata_path = "GB_2050_Data/"  # Path to the Data folder
 
-    systemData = {
-        # 'Carbon Price': pd.read_excel(path + 'Carbon price/carbon_price.xlsx'),
-        # 'Installed Capacity': pd.read_excel(path + 'InstalledCapacity/installed_capacity.xlsx', index_col=0),
-        # 'Power Demand': pd.read_excel(path + 'PowerDemand_Heating_Input/powerDemand.xlsx', index_col=0),
-        
-        'Players': pd.read_csv(GBdata_path + 'GB_market_players.csv'), #import the parameters
 
-        
+    Players_data = pd.read_csv(GBdata_path + 'GB_market_players.csv')
+    Economics_data = pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_Players', index_col = 0)
+    # Economics_data = pd.read_excel(GBdata_path + 'GB_Economic_Parameters2.xlsx', sheet_name='Econ_Players', index_col = 0)
+
+    Players_economics = pd.concat([Economics_data] * 17, ignore_index=True)
+    Players_economics[['id', 'zone_id', 'max_p_mw']] = Players_data[['id', 'zone_id', 'max_p_mw']]
+
+    
+    systemData = {
+
+        'Players':  Players_economics,
+        'Economics': Economics_data,
+        'Economics_H2': pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_H2', index_col = 0),
+
+                
         'Zone_Demand': pd.read_excel(GBdata_path + 'GB_Demand.xlsx', sheet_name='Zone_Demand', index_col=0).transpose(),
         'Urban_Demand': pd.read_excel(GBdata_path + 'GB_Demand.xlsx', sheet_name='Urban_Demand', index_col=0).transpose(),
         'Rural_Demand': pd.read_excel(GBdata_path + 'GB_Demand.xlsx', sheet_name='Rural_Demand', index_col=0).transpose(),
@@ -61,9 +71,10 @@ def data_import(Scenarios):
         'Gen Cost': pd.read_csv(GBdata_path + 'GB_genCost.csv'),
         'Bus Names': pd.read_csv(GBdata_path + 'GB_busName.csv'),
         'P2G Data': pd.read_excel(GBdata_path + 'GB_P2G.xlsx', sheet_name=None),
-        'CCS Data': pd.read_excel(GBdata_path + 'GB_CCS.xlsx', sheet_name=None),  
+        'G2G Data': pd.read_excel(GBdata_path + 'GB_G2G.xlsx', sheet_name=None),  
         
     }
+    
     
     # Process P & Q (demand) for Bus data (Q is not needed, because DC power flow)
     systemData['Bus Data']['2']=systemData['Zone_Demand'][Scenarios['Zone_Demand']].values # P(demand)
@@ -75,7 +86,7 @@ def data_import(Scenarios):
     # systemData['Gen Data']['1'] = systemData['Gen Data']['1']/1000
     
     # Normalize the values by dividing each column by its sum
-    systemData['GB Demand Profiles'] = systemData['GB Demand Profiles'].div(systemData['GB Demand Profiles'].sum(axis=0), axis=1)*1000
+    systemData['GB Demand Profiles'] = systemData['GB Demand Profiles'].div(systemData['GB Demand Profiles'].sum(axis=0), axis=1)*1e6
 
 
     # # Process demand data  from TWh to GWh
@@ -102,22 +113,22 @@ def data_import(Scenarios):
 
 # Coordinates for the regions (17 regions) with acronyms
 regions = {
-    "EE": (52.3000, 0.7000),  
-    "EM": (52.9500, -0.9500),  
-    "L": (51.5099, -0.1181), 
-    "NW": (53.3000, -3.0000), 
-    "WM": (52.5000, -1.9167),  
-    "NEE": (54.9000, -1.5000), 
-    "NWE": (53.7500, -2.5000),  
     "NS": (57.5000, -4.0000),  
-    "SE": (51.0000, -1.0000),  
-    "SW": (51.8333, -3.2500), 
-    "SWE": (50.8000, -3.5000), 
-    "SEE": (51.2000, 0.7000),  
-    "Y": (53.9000, -1.4000),  
     "SS": (55.8667, -3.5000),  
-    "CE": (50.5000, 8.0000),  
+    "NWE": (53.7500, -2.5000), 
+    "NEE": (54.9000, -1.5000), 
+    "NW": (53.3000, -3.0000), 
+    "Y": (53.9000, -1.4000),  
+    "SW": (51.8333, -3.2500), 
+    "WM": (52.5000, -1.9167), 
+    "EM": (52.9500, -0.9500),  
+    "SWE": (50.8000, -3.5000), 
+    "SE": (51.0000, -1.0000),  
+    "L": (51.5099, -0.1181), 
+    "EE": (52.3000, 0.7000), 
+    "SEE": (51.2000, 0.7000),  
     "IE": (53.5000, -7.0000), 
+    "CE": (50.5000, 8.0000),  
     "NS_OFF": (57.5000, -1.950), 
 }
 
@@ -179,7 +190,7 @@ def power_network(time_steps, systemData):
 
     net.load = net_temp.load
     load = systemData['Time Series Profiles']['e_load_time_series'][time_steps]
-    net.load['p_mw'] *= load
+    net.load['p_mw'] = net.load['p_mw'] * load
 
     for i in range(net.gen.shape[0]):
         ppower.create_poly_cost(net, element=i, et="gen",
@@ -201,7 +212,7 @@ energy_gas = 14.64 # kWh/kg, energy content of natural gas
 def calculate_distance(coord1, coord2):
     return geodesic(coord1, coord2).kilometers
 
-# Convert TWh to mdot
+# Convert MWh to mdot
 def convert_mwh_to_mdot(mwh, energy_hydrogen):
     """Convert TWh to mdot_kg_per_s using energy content of hydrogen."""
     return (mwh * 1e3) / (energy_hydrogen * 3600)
@@ -232,61 +243,12 @@ def gas_network(time_steps, systemData):
             length_km=distance_km, k_mm=0.025, diameter_m=1.0, name=f"{from_acronym}-{to_acronym}"
         )
 
-    # Process ATRCCS and BECCS Data
-    atrccs_data = systemData['CCS Data']['ATRCCS']
-    beccs_data = systemData['CCS Data']['BECCS']
-    
-    # Convert capacity from GW to MW
-    atrccs_data['Capacity(MW)'] = atrccs_data['Capacity(GW)'] * 1000
-    beccs_data['Capacity(MW)'] = beccs_data['Capacity(GW)'] * 1000
-    
-    # Compute gas input in MW
-    atrccs_data['Input_MW'] = atrccs_data['Capacity(MW)'] / atrccs_data['Efficiency']
-    beccs_data['Input_MW'] = beccs_data['Capacity(MW)'] / beccs_data['Efficiency']
-
-    # Function to convert MW to mass flow rate (kg/s)
-
-    # Assign each ATRCCS and BECCS unit to its respective junction as a sink
-    for _, row in atrccs_data.iterrows():
-        region = row['Region']
-        input_mdot = convert_mwh_to_mdot(row['Input_MW'], energy_hydrogen)  # Convert MW -> TW before using function
-        ppipes.create_sink(
-            net, junction=junctions[region],
-            mdot_kg_per_s=input_mdot, name=f"Sink {region}_ATRCCS"
-        )
-
-    for _, row in beccs_data.iterrows():
-        region = row['Region']
-        input_mdot = convert_mwh_to_mdot(row['Input_MW'], energy_hydrogen)  # Convert MW -> TW before using function
-        ppipes.create_sink(
-            net, junction=junctions[region],
-            mdot_kg_per_s=input_mdot, name=f"Sink {region}_BECCS"
-        )
         
     ppipes.create_ext_grid(net, junction=junctions["NS"], p_bar=75, t_k=temp_system, name="Grid Connection SS")
 
 
     return net
 
-
-
-
-
-
-# Constants
-energy_hydrogen = 39.41  # kWh/kg, energy content of hydrogen
-# energy_gas = 14.64 # kWh/kg, energy content of natural gas
-
-
-# Function to calculate distance between two coordinates
-def calculate_distance(coord1, coord2):
-    return geodesic(coord1, coord2).kilometers
-
-
-# Convert TWh to mdot
-def convert_twh_to_mdot(twh, energy_hydrogen):
-    """Convert TWh to mdot_kg_per_s using energy content of hydrogen."""
-    return (twh * 1e6) / (energy_hydrogen * 3600)
 
 
 
@@ -300,10 +262,15 @@ def hydrogen_network(time_steps, systemData):
     
     Scenarios = systemData['Scenarios_id']
     
-    demand_g = systemData['H2_Demand'][Scenarios['H2_Demand']]
-    load_g = systemData['Time Series Profiles']['g_load_time_series'][time_steps]
-    demand_g  *= load_g
-    demand_data =list(demand_g)
+    global demand_h_all
+        
+    demand_h = systemData['H2_Demand'][Scenarios['H2_Demand']]
+    load_h = systemData['Time Series Profiles']['g_load_time_series'][time_steps]
+    demand_h  = demand_h * load_h
+    demand_data =list(demand_h)
+    
+    demand_h_all = pd.concat([demand_h, pd.Series([0, 0, 0], index=[15, 16, 17], name="Total")]).sort_index().reset_index(drop=True)
+
 
     junctions = {}
     for acronym, coords in regions.items():
@@ -320,8 +287,8 @@ def hydrogen_network(time_steps, systemData):
             length_km=distance_km, k_mm=0.025, diameter_m=1.0, name=f"{from_acronym}-{to_acronym}"
         )
 
-    for i, (region, demand_twh) in enumerate(zip(regions.keys(), demand_data)):
-        mdot_kg_per_s = convert_twh_to_mdot(demand_twh, energy_hydrogen)
+    for i, (region, demand_mwh) in enumerate(zip(regions.keys(), demand_data)):
+        mdot_kg_per_s = convert_mwh_to_mdot(demand_mwh, energy_hydrogen)
         ppipes.create_sink(
             net, junction=junctions[region],
             # mdot_kg_per_s=systemData['Time Series Profiles']['g_load_time_series'][i][time_steps] * mdot_kg_per_s,
@@ -337,6 +304,8 @@ def hydrogen_network(time_steps, systemData):
 
 
 
+
+
 def coupling_p2g(net_power, net_hyd, multinet, systemData):
     # Load the P2G data from systemData
     p2g_data = systemData['P2G Data']
@@ -346,24 +315,29 @@ def coupling_p2g(net_power, net_hyd, multinet, systemData):
 
     # Iterate over each electrolyser type (SOE, Alkaline, PEM)
     for sheet_name, df in p2g_data.items():
-        print(f"Processing P2G data for {sheet_name}...")
 
         for _, row in df.iterrows():
             region = row["Region"]
             capacity_gw = row["Capacity(GW)"]  # Installed capacity (GW)
-            efficiency = float(row["Efficiency"])  # Efficiency factor
+            efficiency = float(row["Efficiency"])  # Efficiency 
+            input_capacity_mw = (capacity_gw/efficiency) * 1000
 
             if region in regions:
-                # Find corresponding power bus
+                
                 power_bus = region_to_bus[region]
 
-                # Create the load in the power network (with dynamic p_mw control)
-                # The load will be set to the installed capacity (capacity_gw * 1000)
-                # This represents the maximum potential power consumption for this P2G unit
+                # # Assign p_mw from demand_h_all 
+                input_pmw = demand_h_all[power_bus]/efficiency
+                
+                # p_mw_value = 0 
+                # p_mw_value = input_pmw/5
+                p_mw_value = min(input_pmw, input_capacity_mw)
+
+                # Create the load in the power network with dynamic p_mw control
                 p2g_power_load = ppower.create_load(
                     net_power, 
                     bus=power_bus, 
-                    p_mw=capacity_gw * 1000,  # Set initial power flow (MW), controller will adjust based on efficiency
+                    p_mw=p_mw_value,  
                     name=f"P2G_{region}_{sheet_name} consumption"
                 )
 
@@ -372,30 +346,29 @@ def coupling_p2g(net_power, net_hyd, multinet, systemData):
                 p2g_gas_source = ppipes.create_source(
                     net_hyd, 
                     junction=hydrogen_junction, 
-                    mdot_kg_per_s=0,  # Initially 0, controller will adjust the hydrogen flow based on power consumption
+                    mdot_kg_per_s=0,  # Initially 0, controller will adjust based on power consumption
                     name=f"P2G_{region}_{sheet_name} feed in"
                 )
-                
-                
+
                 # Create the P2G control with proper efficiency usage
                 P2GControlMultiEnergy(
                     multinet, 
                     element_index_power=p2g_power_load, 
                     element_index_gas=p2g_gas_source,
-                    efficiency=efficiency,  # Apply the efficiency factor for power-to-hydrogen conversion
+                    efficiency=efficiency,  
                     name_power_net="power", 
-                    name_gas_net="hydrogen"
+                    name_gas_net="hydrogen",
                 )
             else:
                 print(f"Warning: Region {region} not found in the bus/junction mapping. Skipping...")
-
-
-
-
-def coupling_ccs(net_power, net_gas, net_hyd, multinet, systemData):
     
-    # Load CCS data
-    ccs_data = systemData['CCS Data']
+
+
+
+def coupling_g2g(net_power, net_gas, net_hyd, multinet, systemData):
+    
+    # Load G2G data
+    g2g_data = systemData['G2G Data']
     
     # Map each region to its corresponding power bus
     region_to_bus = {region: int(bus) for region, bus in zip(regions.keys(), net_power['bus']['name'] - 1)}
@@ -403,25 +376,46 @@ def coupling_ccs(net_power, net_gas, net_hyd, multinet, systemData):
     # Map each region to its corresponding junction in the gas network
     region_to_gas_junction = {row['name']: idx for idx, row in net_gas['junction'].iterrows()}
     
-    for sheet_name, df in ccs_data.items():
-        print(f"Processing CCS data for {sheet_name}...")
+    for sheet_name, df in g2g_data.items():
 
         for _, row in df.iterrows():
             region = row["Region"]
-            capacity_gw = row["Capacity(GW)"]
-            efficiency = float(row["Efficiency"])
+            capacity_gw = row["Capacity(GW)"]  # Installed capacity (GW)
+            efficiency = float(row["Efficiency"])  # Efficiency 
+            input_capacity_mw = (capacity_gw/efficiency) * 1000
 
             if region in regions:
-                power_bus = region_to_bus[region]
                 
+                power_bus = region_to_bus[region]
+                # Compute electricity demand for the CCS technology 
+                if sheet_name == "ATRCCS":
+                    # power_CCS_mw = capacity_gw * 0.2 
+                    power_CCS_mw = demand_h_all[power_bus] * 0.2 
+                    
+                elif sheet_name == "BECCS":
+                    # power_CCS_mw = capacity_gw * 0.3
+                    power_CCS_mw = demand_h_all[power_bus] * 0.3
+                          
+                else:
+                    print(f"Warning: Unknown CCS type {sheet_name}. Skipping power calculation...")
+                    continue
+                
+
+                # # Assign p_mw from demand_h_all 
+                input_pmw = demand_h_all[power_bus]/efficiency
+                
+                # p_mw_value = 0 
+                # p_mw_value = input_pmw
+                p_mw_value = min(input_pmw, input_capacity_mw)
+    
                 # Create a power load in the electricity network
-                ccs_power_load = ppower.create_load(
+                ppower.create_load(
                     net_power, 
                     bus=power_bus, 
-                    p_mw=capacity_gw, 
+                    p_mw=power_CCS_mw,  # CCS Electricity consumption (MW)
                     name=f"CCS_{region}_{sheet_name} consumption"
                 )
-
+            
                 # Locate junctions in both gas and hydrogen networks
                 hydrogen_junction = net_hyd['junction'].loc[net_hyd['junction']['name'] == region].index[0]
                 gas_junction = region_to_gas_junction.get(region)  # Get the correct gas junction
@@ -429,43 +423,48 @@ def coupling_ccs(net_power, net_gas, net_hyd, multinet, systemData):
                 if gas_junction is None:
                     print(f"Warning: No gas junction found for region {region}. Skipping...")
                     continue  # Skip if no corresponding gas junction is found
-
+                
+                
                 # Create a natural gas sink (gas is consumed)
-                ccs_gas_sink = ppipes.create_sink(
+                g2g_sink = ppipes.create_sink(
                     net_gas, 
-                    junction=gas_junction, 
-                    mdot_kg_per_s=0,  # Controlled dynamically
-                    name=f"CCS_{region}_{sheet_name} NG consumption"
+                    junction=gas_junction,  
+                    # mdot_kg_per_s=0,  # Controlled dynamically
+                    mdot_kg_per_s = convert_mwh_to_mdot(p_mw_value, energy_hydrogen),
+                    name=f"{sheet_name}_{region} NG consumption"
                 )
 
                 # Create a hydrogen source (produced gas)
-                ccs_gas_source = ppipes.create_source(
+                g2g_source = ppipes.create_source(
                     net_hyd, 
                     junction=hydrogen_junction, 
                     mdot_kg_per_s=0,  # Controlled dynamically
-                    name=f"CCS_{region}_{sheet_name} H2 feed-in"
+                    name=f"{sheet_name}_{region} H2 feed-in"
                 )
 
                 # Add Gas-to-Gas conversion controller
                 GasToGasConversion(
                     multinet=multinet, 
-                    element_index_from=ccs_gas_sink,  # Natural gas input
-                    element_index_to=ccs_gas_source,  # Hydrogen output
+                    element_index_from=g2g_sink,  
+                    element_index_to=g2g_source, 
                     efficiency=efficiency,  
                     name_gas_net_from="gas",  
-                    name_gas_net_to="hydrogen"
+                    name_gas_net_to="hydrogen", 
                 )
-
+                
             else:
                 print(f"Warning: Region {region} not found in mapping. Skipping...")
 
-    multinet.nets['gas'].sink['mdot_kg_per_s'][24:48] = multinet.nets['gas'].sink['mdot_kg_per_s'][:24]
-    multinet.nets['gas'].sink['mdot_kg_per_s'][:24] = 0
 
 
 
-def OPGF(multinet,net_power, net_hyd):
+def OPGF(multinet, systemData):
     
+    global variable, obj_OPGF, ele_gens
+
+    # co2_penalty = 0 # £/tonne CO2
+    co2_penalty = 100 # £/tonne CO2
+
     ele_opex_price = 33.69 # £/MWh
     gas_opex_price = 9.73 # £/MWh
     hyd_opex_price = 9 # £/MWh
@@ -473,130 +472,142 @@ def OPGF(multinet,net_power, net_hyd):
     # ele_opex_price = 250 # £/MWh
     # gas_opex_price = 250 # £/MWh
     # hyd_opex_price = 250 # £/MWh
+    
+    genEconomics = systemData['Economics']
+
+    ele_gens =  pd.DataFrame([])        
+    ele_gens['max_p_mw'] = pd.DataFrame(systemData['Gen Data']['8'])  # Convert from Series to DataFrame
+    ele_gens['type'] = systemData['Players']['type'].iloc[:ele_gens.shape[0]].values
+    ele_gens = ele_gens.merge(genEconomics[['type', 'emissions']], on='type', how='left')
+    genCount = np.shape(ele_gens)[0]
 
     
-    # genData = pd.read_csv('Data/genData.csv')
-    genData = systemData['Gen Data']['8'] 
-    genCount = np.shape(genData)[0]
-        
     prob = lp.LpProblem("OPGF", lp.LpMinimize)
     
     # Variables
     q_e   = lp.LpVariable.dicts("elect", list(np.arange(genCount)), cat='Continuous')
     q_g   = lp.LpVariable("gas", cat='Continuous')
     q_p2g = lp.LpVariable.dicts("P2G",list(np.arange(51)), cat='Continuous')
-    # q_g2p = lp.LpVariable.dicts("G2P", list(np.arange(70)), cat='Continous')
-    q_g2g = lp.LpVariable.dicts("G2G", list(np.arange(24)), cat='Continous')
+    q_g2g = lp.LpVariable.dicts("G2G", list(np.arange(34)), cat='Continuous')
     q_h   = lp.LpVariable("hydrogen", cat='Continuous')
         
-    # Objective function
-    prob += (
-          lp.lpSum(ele_opex_price * q_e[gen] for gen in range(genCount))
+    
+    # # Objective function
+            
+    prob += (lp.lpSum((ele_opex_price + co2_penalty * ele_gens.iloc[gen]["emissions"]) * q_e[gen]
+          for gen in range(genCount))
+                          
         + lp.lpSum(ele_opex_price * q_p2g[p2g] for p2g in range(51))
-        # + lp.lpSum(gas_opex_price * q_g2p[g2p] for g2p in range(70))
-        + lp.lpSum(gas_opex_price * q_g2g[g2g] for g2g in range(24))
+        + lp.lpSum(gas_opex_price * q_g2g[g2g] for g2g in range(34))
         + lp.lpSum(gas_opex_price * q_g)
         + lp.lpSum(hyd_opex_price * q_h)
         ), "objective"
     
+
     for i in range(genCount):
-        prob += q_e[i] <= genData['8'][i]
+        prob += q_e[i] <= ele_gens.iloc[i]["max_p_mw"]
         prob += q_e[i] >= 0
     
     prob += q_g <= 1e20 # limit for the suppliers
-        
-    p2g_units = multinet.nets['power'].load.dropna(subset=['name'])  # Remove NaN values in 'name' column
-    p2g_units = p2g_units[p2g_units['name'].str.contains("P2G", na=False)]  # Apply the filter for P2G units
-
-    p2g_limits = p2g_units['p_mw'].values  # Get the power limits (p_mw values)
     
-    for i in range(len(p2g_limits)):  # Iterate over all P2G units
-        prob += q_p2g[i] <= p2g_limits[i]  # Use the dynamic limits
+    capacity_values = []
+    for tech, df in systemData['P2G Data'].items():
+        capacity_values.extend(df['Capacity(GW)'].tolist())
+    
+    p2g_limits = np.array(capacity_values)*1000
+    
+    for i in range(len(p2g_limits)):  
+        prob += q_p2g[i] <= p2g_limits[i] 
         prob += q_p2g[i] >= 0
-        
     
-    g2g_units = multinet.nets['hydrogen'].source.dropna(subset=['name'])  # Remove NaN values in 'name' column
-    g2g_units = g2g_units[g2g_units['name'].str.contains("CCS", na=False)]  # Filter for 'CCS' units
     
-    # # Extract the flow limits for each G2G unit based on the filtered data
-    # g2g_limits = []
-    # for i in range(len(g2g_units)):
-    #     # # Extract the mdot_kg_per_s for each G2G unit, which is the flow limit
-    #     # limit = g2g_units.iloc[i]['mdot_kg_per_s'] * (energy_hydrogen*3600)/1e6  # Apply the conversion factor
-    #     limit = g2g_units.iloc[i]['mdot_kg_per_s']
-    #     g2g_limits.append(limit)
+    capacity_values = []
+    for tech, df in systemData['G2G Data'].items():
+        capacity_values.extend(df['Capacity(GW)'].tolist())
     
-    g2g_limits = list(multinet.nets['gas'].sink['mdot_kg_per_s'][g2g_units.index])
-        
-    # Apply the constraints for each G2G unit in the optimization problem
+    g2g_limits = np.array(capacity_values)*1000
+    
     for i in range(len(g2g_limits)):
-        prob += q_g2g[i] <= g2g_limits[i]  # Set upper limit for each G2G unit
-        prob += q_g2g[i] >= 0  # Ensure the flow is non-negative
+        prob += q_g2g[i] <= g2g_limits[i] 
+        prob += q_g2g[i] >= 0
         
-    
         
-    prob += q_h <= 1e20
+    # prob += q_h <= 1e20
         
+    prob += lp.lpSum(q_e[gen] for gen in range(genCount))  == (sum(multinet.nets['power'].load['p_mw'][0:14])
+              + sum(multinet.nets['power'].load['p_mw'][65:]) + lp.lpSum(q_p2g[p2g] for p2g in range(51)))
     
-    prob += lp.lpSum(q_e[gen] for gen in range(genCount))  == (sum(multinet.nets['power'].load['p_mw'][0:32]) 
-                                                         + lp.lpSum(q_p2g[p2g] for p2g in range(4)))
-    prob += q_g  == (sum(multinet.nets['gas'].sink['mdot_kg_per_s'][0:15])*(energy_hydrogen*3600)/(1000)
-                                                         + lp.lpSum(q_g2p[g2p] for g2p in range(5)))
-    prob += q_h  == 2, "C3" 
+    prob += q_g  == sum(multinet.nets['gas'].sink['mdot_kg_per_s'][:34])*(energy_gas*3600)/1000
     
-    #prob += lp.lpSum(q_p2g[p2g] for p2g in range(4)) <= sum(p2g_limits), "C4"
-    #prob += lp.lpSum(q_g2p[g2p] for g2p in range(5)) <= sum(g2p_limits), "C5"
+    # prob += q_g  == lp.lpSum(q_g2g[g2g] for g2g in range(34))
+    
+    q_h_demand = sum(multinet.nets['hydrogen'].sink['mdot_kg_per_s'])*(energy_hydrogen*3600)/1e3
+    
+    prob += q_h == q_h_demand, "C3" 
+    
+    prob += lp.lpSum(q_p2g[p2g] for p2g in range(51)) <= sum(p2g_limits), "C4"
+    prob += lp.lpSum(q_g2g[g2g] for g2g in range(34)) <= sum(g2g_limits), "C5"
     
     #Solve the problem using the default solver
     prob.solve(lp.PULP_CBC_CMD(msg=0))
     
     
     
-    global variable
     variable = prob.variables()
-    if variable[35].varValue > 0:
-        electrolyser(net_power, net_hyd, multinet, variable[34].varValue)
-        fuel_cell(net_power, net_hyd, multinet, 0)
-    else:
-        electrolyser(net_power, net_hyd, multinet, 0)
-        fuel_cell(net_power, net_hyd, multinet, variable[34].varValue)
-        
-    # Print the value of the objective
-    # print("objective=", lp.value(prob.objective))
-    
-    
 
-def declaration():
-    global e_generation, g_supply, hydrogen_conv
-    e_generation = []
-    g_supply = []
-    hydrogen_conv = []
+    obj_OPGF = lp.value(prob.objective)
     
+    # # Extract optimized generation values
+    opz_gens = {ele_gens.index[i]: q_e[i].varValue for i in range(genCount)}
+    ele_gens['optz_gens'] = ele_gens.index.map(opz_gens)
+
     
     
 def run_OPGF(t, genData,  systemData):
     
-    # Step 1: Form the networks
-    net_power   = power_network(t, systemData)
-    net_gas     = gas_network(t, systemData)
-    net_hyd     = hydrogen_network(t, systemData)
-
+    global result
     
-    # Step 2: Form the multinet
-    global multinet
-    multinet = form_multinet(net_power, net_gas, net_hyd, systemData)
+    # Define the time stepts
+    time_steps = range(t)
     
-    # # Step 3: Initial calculations for the OPDG
-    # OPGF(multinet,net_power, net_hyd)
         
-    
-    # Run the simulation
-    run_control(multinet, ctrl_variables= {'nets': {'power':{'run': ppower.rundcopp}}}) # ctrl_variables added to run the dc opf
-    
-    # run_control(multinet)
-    
+    # # B: Run the loop1
+    for i in time_steps:
+    # for i in [0]:
+        '''
+        The network is created again in every loop. This can be changed
+        Controllers may get confused and errors may appear
+        '''
+        
+        # Step 1: Form the networks
+        net_power   = power_network(t, systemData)
+        net_gas     = gas_network(t, systemData)
+        net_hyd     = hydrogen_network(t, systemData)
+
+        # Step 2: Form the multinet
+        global multinet
+        
+        multinet =  form_multinet(net_power, net_gas, net_hyd, systemData)
+        
+        # # Step 3: Initial calculations for the OPDG
+        OPGF(multinet, systemData)
+        
+        
+        # # Step 4: Run the simulation
+        run_control(multinet, ctrl_variables= {'nets': {'power':{'run': ppower.rundcopp}}}) # ctrl_variables added to run the dc opf
+        
+        # run_control(multinet)
+        
+
+        # # # Step 7: Publish the results
+        # print_results(multinet)
+                
 
     return multinet
+
+
+
+
 
 def initial_run_OPGF(systemData):
     # Running the GT model
@@ -604,7 +615,8 @@ def initial_run_OPGF(systemData):
     # genData = pd.read_csv('Data/genData.csv')
     genData = systemData['Gen Data']['8'] 
     
-    hour_of_day = 24*12*7 # Input how many hours the model shall run
+    # hour_of_day = 24*12*7 # Input how many hours the model shall run
+    hour_of_day = 1
     multinet = run_OPGF(hour_of_day, genData,  systemData) # Running the OPGF
     
     # global time_steps
@@ -615,6 +627,7 @@ def initial_run_OPGF(systemData):
 
 
 def form_multinet(net_power, net_gas, net_hyd, systemData):
+    
     # create multinet and add networks:
     multinet = create_empty_multinet('GB_multinet')
     add_net_to_multinet(multinet, net_power, 'power')
@@ -622,13 +635,79 @@ def form_multinet(net_power, net_gas, net_hyd, systemData):
     add_net_to_multinet(multinet, net_hyd, 'hydrogen')
     
     # ## Add coupling components to the network
-    # coupling_p2g(net_power, net_hyd, multinet, systemData)
-    coupling_ccs(net_power, net_gas, net_hyd, multinet, systemData)
+    coupling_p2g(net_power, net_hyd, multinet, systemData)
+    coupling_g2g(net_power, net_gas, net_hyd, multinet, systemData)
 
     
     return multinet
 
 
+def intital_multinet(time_steps,  systemData):
+    
+    t=time_steps
+    
+    # Form the networks
+    net_power_0   = power_network(t, systemData)
+    net_gas_0    = gas_network(t, systemData)
+    net_hyd_0    = hydrogen_network(t, systemData)
+    
+    # create multinet and add networks:
+    multinet_0 = create_empty_multinet('GB_multinet')
+    add_net_to_multinet(multinet_0, net_power_0, 'power')
+    add_net_to_multinet(multinet_0, net_gas_0, 'gas')
+    add_net_to_multinet(multinet_0, net_hyd_0, 'hydrogen')
+    
+    # ## Add coupling components to the network
+    coupling_p2g(net_power_0, net_hyd_0, multinet_0, systemData)
+    coupling_g2g(net_power_0, net_gas_0, net_hyd_0, multinet_0, systemData)
+
+    
+    return multinet_0
+
+
+
+def format_results(results, objective):
+    
+    formatted_results = {}
+    
+    [results.pop(key, None) for key in ["Maximum generation capacity", "Losses"]]
+    
+    
+    for key, value in results.items():
+        if abs(value) >= 1e6:  # Convert to GW if >= 1,000,000 MW
+            formatted_results[key] = f"{value / 1e3:.2f} GW"
+        elif abs(value) >= 1e3:  # Convert to GWh if >= 1,000 MW
+            formatted_results[key] = f"{value / 1e3:.2f} GWh"
+        else:  # Keep in MWh if < 1,000 MW
+            formatted_results[key] = f"{value:.2f} MWh"
+
+    # Add formatted objective
+    formatted_results["Objective"] = f"{objective:,.2f} £"
+
+    return formatted_results
+
+
+
+def plot_generation_bar(generation_by_type, output_folder="Output"):
+
+    # Ensure output folder exists
+    os.makedirs(output_folder, exist_ok=True)
+    output_path = os.path.join(output_folder)
+
+    # Plot settings
+    plt.figure(figsize=(12, 6))
+    generation_by_type.sort_values(ascending=False).plot(kind='bar', color='royalblue', edgecolor='black')
+
+    # Labels and title
+    plt.xlabel("Generation Type")
+    plt.ylabel("Power Output (MW)")
+    plt.title("Electricity Generation by Type")
+    plt.xticks(rotation=45, ha='right')  # Rotate labels for readability
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+    # Save the figure
+    plt.savefig(output_path+'/'+'generation_plot.png', dpi=300, bbox_inches="tight")
+    plt.close()  # Close the plot to free memory
 
 
 
@@ -731,32 +810,58 @@ if __name__ == "__main__":
     print()
 
 
-    results = {
-        # "Electrolyser out": multinet.nets['hydrogen'].source['mdot_kg_per_s'][0],
+
+    results = {        
         "Maximum generation capacity": sum(multinet.nets['power'].gen['max_p_mw']),
-        "Resultant generation": sum(multinet.nets['power'].res_gen['p_mw']),
-        "Total and resultant load": sum(multinet.nets['power'].res_load['p_mw']),
-        "External grid": multinet.nets['power'].res_ext_grid['p_mw'][0],
+        "Total Generation": sum(multinet.nets['power'].res_gen['p_mw'])+sum(multinet.nets['power'].res_sgen['p_mw']),
+        "FC Generation": sum(multinet.nets['power'].res_sgen['p_mw']),
+        "Other Generations": sum(multinet.nets['power'].res_gen['p_mw']),
+
+        "Total Load": sum(multinet.nets['power'].res_load['p_mw']),
+        
         "Losses": sum(multinet.nets['power'].res_line['pl_mw']),
-        "Total Ele load": sum(multinet.nets['power'].res_load['p_mw'][:14]),
-        "Total P2G load": sum(multinet.nets['power'].res_load['p_mw'][14:]),
-
+        "Elec load": sum(multinet.nets['power'].res_load['p_mw'][:14]),
+        "P2G load": sum(multinet.nets['power'].res_load['p_mw'][14:65]),
+        "CCS load": sum(multinet.nets['power'].res_load['p_mw'][65:]),
         
-        # "Hydrogen demand (kg/s)": sum(multinet.nets['hydrogen'].res_sink['mdot_kg_per_s']),
-        # "Hydrogen external (kg/s)": sum(multinet.nets['hydrogen'].res_ext_grid['mdot_kg_per_s'])
-        
+        "External grid": multinet.nets['power'].res_ext_grid['p_mw'][0],
+        "G2G Gas Demand": multinet.nets['gas'].res_sink['mdot_kg_per_s'][:34].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
 
-        "Hydrogen demand": sum(multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'])*(energy_hydrogen*3600)/1e3,
-        "Hydrogen supply": multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
-        "Hydrogen external": sum(multinet.nets['hydrogen'].res_ext_grid['mdot_kg_per_s'])*(energy_hydrogen*3600)/1e3
+        "Total H2 Demand": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+        "H2 Consumption": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'][:14].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+        "H2 G2P Demand": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'][14:].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+
+        "Total H2 Supply": multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+        "P2G H2 Supply": multinet.nets['hydrogen'].res_source['mdot_kg_per_s'][0:51].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+        "G2G H2 Supply":multinet.nets['hydrogen'].res_source['mdot_kg_per_s'][51:].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+        "H2 external": sum(multinet.nets['hydrogen'].res_ext_grid['mdot_kg_per_s'])*(energy_hydrogen*3600)/1e3
     }
-        
     
-    from IPython.display import display
-    display(results)
+   
+    # from IPython.display import display
+    # display(results)
     
+
+    # Print formatted results 
+    formatted_results = format_results(results, obj_OPGF)
+    for key, value in formatted_results.items():
+        print(f"{key}: {value}")    
+
+
     print("\nSelected Scenarios:")
     for key, value in Scenarios.items():
         print(f"{key}: {value}")
-        
-        
+
+
+    # Group by 'type' and sum the numeric columns
+    ele_gens_grouped = ele_gens.groupby('type', as_index=False).sum()
+    ele_gens_grouped.sum()
+    
+    generation = multinet.nets['power'].res_gen[['p_mw']].copy()
+    players_type = systemData['Players'][['type', 'id']].copy()
+    generation = generation.merge(players_type, left_index=True, right_on='id')
+    generation_by_type = generation.groupby('type')['p_mw'].sum()
+    generation_by_type
+    generation_by_type.sum()
+
+    plot_generation_bar(generation_by_type, output_folder="Output")
