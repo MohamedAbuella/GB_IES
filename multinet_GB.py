@@ -11,7 +11,6 @@ import pandapower as ppower
 import pandapower.converter as pc
 import matplotlib.pyplot as plt
 
-# Libraries for parallel processing
 from multiprocessing import Process, Pool
 import multiprocessing
 from joblib import Parallel, delayed
