@@ -782,7 +782,7 @@ if __name__ == "__main__":
         "CCS load": sum(multinet.nets['power'].res_load['p_mw'][65:]),
         
         "External grid": multinet.nets['power'].res_ext_grid['p_mw'][0],
-        "G2G Gas Demand": multinet.nets['gas'].res_sink['mdot_kg_per_s'][:34].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
+        "G2G Gas Demand": multinet.nets['gas'].res_sink['mdot_kg_per_s'][:34].sum(skipna=True)*(energy_gas*3600)/1e3,
     
         "Total H2 Demand": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
         "H2 Consumption": multinet.nets['hydrogen'].res_sink['mdot_kg_per_s'][:14].sum(skipna=True)*(energy_hydrogen*3600)/1e3,
