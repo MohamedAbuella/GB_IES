@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jan 27 06:05:41 2025
+Created on Sat Mar  1 15:01:38 2025
 
 @author: Mhdella
 """
+
 
 # importing the libs
 import pandapipes as ppipes
@@ -11,6 +12,7 @@ import pandapower as ppower
 import pandapower.converter as pc
 import matplotlib.pyplot as plt
 
+# Libraries for parallel processing
 from multiprocessing import Process, Pool
 import multiprocessing
 from joblib import Parallel, delayed
@@ -55,11 +57,14 @@ def data_import(Scenarios):
     
     systemData = {
 
+        'Year': int(year), 'scenario': scenario,
         'Players':  Players_economics,
         'Economics': Economics_data,
         'Economics_H2': pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_H2', index_col = 0),
 
-                
+        'Carbon Price'      : pd.read_excel(GBdata_path + 'carbon_price.xlsx'), # carbon price ,
+        'Installed capacity': pd.read_excel(GBdata_path + 'installed_capacity.xlsx', sheet_name=scenario, index_col = 0), #installed capacity
+
         'Zone_Demand': pd.read_excel(GBdata_path + 'GB_Demand.xlsx', sheet_name='Zone_Demand', index_col=0).transpose(),
         'Urban_Demand': pd.read_excel(GBdata_path + 'GB_Demand.xlsx', sheet_name='Urban_Demand', index_col=0).transpose(),
         'Rural_Demand': pd.read_excel(GBdata_path + 'GB_Demand.xlsx', sheet_name='Rural_Demand', index_col=0).transpose(),
@@ -106,8 +111,24 @@ def data_import(Scenarios):
         'g_load_time_series': systemData['GB Demand Profiles']['H2 industry'].values,
                                          }
     
+    Coupling_scale = 1
+    
+    for key in systemData['P2G Data']:
+        systemData['P2G Data'][key]['Capacity(GW)'] *= Coupling_scale
+    
+    for key in systemData['G2G Data']:
+        systemData['G2G Data'][key]['Capacity(GW)'] *= Coupling_scale
+        
+        
     systemData['Scenarios_id'] =Scenarios
+    
+    # # Filter out players with zero capacity (2050)
+    systemData['Players_2050'] = systemData['Players'][systemData['Players']["max_p_mw"] > 0]
+    
+    
+    systemData['Players_H2'] = pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_Players_H2', index_col = 0)
 
+    
     return systemData
 
 
@@ -160,6 +181,12 @@ connections = [
 
 
 def power_network(time_steps, systemData):
+    
+    year =systemData['Year']; scenario = systemData['scenario']
+    CO2_penalty = systemData['Carbon Price'].loc[systemData['Carbon Price']['Year'] == year, scenario].iloc[0]
+
+    systemData['Gen Cost']['5'] = systemData['Players']['costs'] + (systemData['Players']['emissions'] * CO2_penalty)
+    
     ppc = {
         "version": '2',
         "baseMVA": 100.0,
@@ -217,6 +244,8 @@ def calculate_distance(coord1, coord2):
 def convert_mwh_to_mdot(mwh, energy_hydrogen):
     """Convert TWh to mdot_kg_per_s using energy content of hydrogen."""
     return (mwh * 1e3) / (energy_hydrogen * 3600)
+
+
 
 
 
@@ -459,131 +488,122 @@ def coupling_g2g(net_power, net_gas, net_hyd, multinet, systemData):
 
 
 
+
 def OPGF(multinet, systemData):
-    
     global variable, obj_OPGF, ele_gens
 
-    # co2_penalty = 0 # £/tonne CO2
     co2_penalty = 100 # £/tonne CO2
+    ele_opex_price = 33.69  # £/MWh
+    gas_opex_price = 9.73  # £/MWh
+    hyd_opex_price = 9  # £/MWh
 
-    ele_opex_price = 33.69 # £/MWh
-    gas_opex_price = 9.73 # £/MWh
-    hyd_opex_price = 9 # £/MWh
-    
-    # ele_opex_price = 250 # £/MWh
-    # gas_opex_price = 250 # £/MWh
-    # hyd_opex_price = 250 # £/MWh
-    
     genEconomics = systemData['Economics']
 
-    ele_gens =  pd.DataFrame([])        
-    ele_gens['max_p_mw'] = pd.DataFrame(systemData['Gen Data']['8'])  # Convert from Series to DataFrame
+    ele_gens = pd.DataFrame([])        
+    ele_gens['max_p_mw'] = pd.DataFrame(systemData['Gen Data']['8'])  
     ele_gens['type'] = systemData['Players']['type'].iloc[:ele_gens.shape[0]].values
     ele_gens = ele_gens.merge(genEconomics[['type', 'emissions']], on='type', how='left')
     genCount = np.shape(ele_gens)[0]
-
     
+    # Extract Hydrogen Economics
+    h2_econ = systemData['Economics_H2']
+    
+    capex_p2g = h2_econ.loc["Electrolyser", "Capital Cost (£/MW)"]
+    opex_p2g = h2_econ.loc["Electrolyser", "Fixed O&M (£/MW/year)"]
+    eff_p2g = h2_econ.loc["Electrolyser", "Efficiency (%)"] / 100  
+    
+    capex_g2g = h2_econ.loc["GHR-CCS", "Capital Cost (£/MW)"]
+    opex_g2g = h2_econ.loc["GHR-CCS", "Fixed O&M (£/MW/year)"]
+    eff_g2g = h2_econ.loc["GHR-CCS", "Efficiency (%)"] / 100  
+    co2_g2g = h2_econ.loc["GHR-CCS", "Carbon Emissions (kg/MWh)"]  
+    
+
     prob = lp.LpProblem("OPGF", lp.LpMinimize)
     
     # Variables
-    q_e   = lp.LpVariable.dicts("elect", list(np.arange(genCount)), cat='Continuous')
-    q_g   = lp.LpVariable("gas", cat='Continuous')
-    q_p2g = lp.LpVariable.dicts("P2G",list(np.arange(51)), cat='Continuous')
-    q_g2g = lp.LpVariable.dicts("G2G", list(np.arange(34)), cat='Continuous')
-    q_h   = lp.LpVariable("hydrogen", cat='Continuous')
-        
+    q_e = lp.LpVariable.dicts("elect", list(np.arange(genCount)), lowBound=0, cat='Continuous')
+    q_g = lp.LpVariable("gas", lowBound=0, cat='Continuous')
+    q_p2g = lp.LpVariable.dicts("P2G", list(np.arange(51)), lowBound=0, cat='Continuous')
+    q_g2g = lp.LpVariable.dicts("G2G", list(np.arange(34)), lowBound=0, cat='Continuous')
+    q_h = lp.LpVariable("hydrogen", lowBound=0, cat='Continuous')
     
-    # # Objective function
-            
-    prob += (lp.lpSum((ele_opex_price + co2_penalty * ele_gens.iloc[gen]["emissions"]) * q_e[gen]
-          for gen in range(genCount))
-                          
-        + lp.lpSum(ele_opex_price * q_p2g[p2g] for p2g in range(51))
-        + lp.lpSum(gas_opex_price * q_g2g[g2g] for g2g in range(34))
-        + lp.lpSum(gas_opex_price * q_g)
-        + lp.lpSum(hyd_opex_price * q_h)
-        ), "objective"
+    # Objective function
+    prob += (lp.lpSum((ele_opex_price + co2_penalty * ele_gens.iloc[gen]["emissions"]) * q_e[gen] for gen in range(genCount))
+              + lp.lpSum(opex_p2g * q_p2g[p2g] / eff_p2g for p2g in range(51))  
+              + lp.lpSum((opex_g2g + co2_penalty * co2_g2g) * q_g2g[g2g] / eff_g2g for g2g in range(34))  
+              + lp.lpSum(gas_opex_price * q_g)
+              + lp.lpSum(hyd_opex_price * q_h)
+            ), "objective"
     
-
+    # Generation constraints
     for i in range(genCount):
         prob += q_e[i] <= ele_gens.iloc[i]["max_p_mw"]
         prob += q_e[i] >= 0
+
+    prob += q_g <= 1e20  # Arbitrary large limit
     
-    prob += q_g <= 1e20 # limit for the suppliers
-    
-    capacity_values = []
-    for tech, df in systemData['P2G Data'].items():
-        capacity_values.extend(df['Capacity(GW)'].tolist())
-    
-    p2g_limits = np.array(capacity_values)*1000
-    
+    # P2G constraints
+    p2g_limits = np.array([df['Capacity(GW)'].sum() * 1000 for df in systemData['P2G Data'].values()])
     for i in range(len(p2g_limits)):  
-        prob += q_p2g[i] <= p2g_limits[i] 
-        prob += q_p2g[i] >= 0
+        prob += q_p2g[i] <= p2g_limits[i]
     
+    # G2G constraints
+    g2g_limits = np.array([df['Capacity(GW)'].sum() * 1000 for df in systemData['G2G Data'].values()])
+    for i in range(len(g2g_limits)):  
+        prob += q_g2g[i] <= g2g_limits[i]
+
+    # Demand constraint: Generation should not exceed demand
+    total_elec_demand = sum(multinet.nets['power'].load['p_mw'][0:14]) + sum(multinet.nets['power'].load['p_mw'][65:])
+    prob += lp.lpSum(q_e[gen] for gen in range(genCount)) <= total_elec_demand, "Electricity Demand Constraint"
+
+    # Hydrogen demand constraint
+    q_h_demand = sum(multinet.nets['hydrogen'].sink['mdot_kg_per_s']) * (energy_hydrogen * 3600) / 1e3
+    prob += lp.lpSum(q_p2g[p2g] * eff_p2g for p2g in range(51)) + lp.lpSum(q_g2g[g2g] * eff_g2g for g2g in range(34)) >= q_h_demand, "Hydrogen Balance"
+
     
-    capacity_values = []
-    for tech, df in systemData['G2G Data'].items():
-        capacity_values.extend(df['Capacity(GW)'].tolist())
+    prob += lp.lpSum(q_e[gen] for gen in range(genCount)) == (sum(multinet.nets['power'].load['p_mw'])  
+            + lp.lpSum(q_p2g[p2g] for p2g in range(51)))
+
     
-    g2g_limits = np.array(capacity_values)*1000
-    
-    for i in range(len(g2g_limits)):
-        prob += q_g2g[i] <= g2g_limits[i] 
-        prob += q_g2g[i] >= 0
-        
-        
-    # prob += q_h <= 1e20
-        
-    prob += lp.lpSum(q_e[gen] for gen in range(genCount))  == (sum(multinet.nets['power'].load['p_mw'][0:14])
-              + sum(multinet.nets['power'].load['p_mw'][65:]) + lp.lpSum(q_p2g[p2g] for p2g in range(51)))
-    
-    prob += q_g  == sum(multinet.nets['gas'].sink['mdot_kg_per_s'][:34])*(energy_gas*3600)/1000
-    
-    # prob += q_g  == lp.lpSum(q_g2g[g2g] for g2g in range(34))
-    
-    q_h_demand = sum(multinet.nets['hydrogen'].sink['mdot_kg_per_s'])*(energy_hydrogen*3600)/1e3
-    
-    prob += q_h == q_h_demand, "C3" 
-    
-    prob += lp.lpSum(q_p2g[p2g] for p2g in range(51)) <= sum(p2g_limits), "C4"
-    prob += lp.lpSum(q_g2g[g2g] for g2g in range(34)) <= sum(g2g_limits), "C5"
-    
-    #Solve the problem using the default solver
+    # Solve the problem
     prob.solve(lp.PULP_CBC_CMD(msg=0))
     
+    # print("Total Power Demand:", sum(multinet.nets['power'].load['p_mw']))
+    
+    # print("Total Demand:", sum(multinet.nets['power'].load['p_mw'])  
+    #         + lp.value(lp.lpSum(q_p2g[p2g] for p2g in range(51))))
+
+    # print(ele_gens[['type', 'max_p_mw']])
+    
+    # print("Solver Status:", lp.LpStatus[prob.status])
     
     
     variable = prob.variables()
-
     obj_OPGF = lp.value(prob.objective)
     
-    # # Extract optimized generation values
+    # Store optimized generation values
     opz_gens = {ele_gens.index[i]: q_e[i].varValue for i in range(genCount)}
     ele_gens['optz_gens'] = ele_gens.index.map(opz_gens)
 
-    
+
+
     
 def run_OPGF(t, genData,  systemData):
     
     global result
     
     # Define the time stepts
-    time_steps = range(t)
+    time_hrs = range(t)
     
         
-    # # B: Run the loop1
-    for i in time_steps:
-    # for i in [0]:
-        '''
-        The network is created again in every loop. This can be changed
-        Controllers may get confused and errors may appear
-        '''
-        
+    ### Run the loop1
+    # for ti in time_hrs:
+    for ti in [t]:
+
         # Step 1: Form the networks
-        net_power   = power_network(t, systemData)
-        net_gas     = gas_network(t, systemData)
-        net_hyd     = hydrogen_network(t, systemData)
+        net_power   = power_network(ti, systemData)
+        net_gas     = gas_network(ti, systemData)
+        net_hyd     = hydrogen_network(ti, systemData)
 
         # Step 2: Form the multinet
         global multinet
@@ -600,7 +620,7 @@ def run_OPGF(t, genData,  systemData):
         # run_control(multinet)
         
 
-        # # # Step 7: Publish the results
+        # # Step 7: Publish the results
         # print_results(multinet)
                 
 
@@ -610,15 +630,16 @@ def run_OPGF(t, genData,  systemData):
 
 
 
-def initial_run_OPGF(systemData):
+def initial_run_OPGF(time_steps, systemData):
     # Running the GT model
  
     # genData = pd.read_csv('Data/genData.csv')
     genData = systemData['Gen Data']['8'] 
     
-    # hour_of_day = 24*12*7 # Input how many hours the model shall run
-    hour_of_day = 1
-    multinet = run_OPGF(hour_of_day, genData,  systemData) # Running the OPGF
+    time_hrs = range(8760)
+    t = time_hrs[time_steps]
+    
+    multinet = run_OPGF(t, genData,  systemData) # Running the OPGF
     
     # global time_steps
     # time_steps = hour_of_day-1
@@ -645,7 +666,8 @@ def form_multinet(net_power, net_gas, net_hyd, systemData):
 
 def intital_multinet(time_steps,  systemData):
     
-    t=time_steps
+    time_hrs = range(8760)
+    t = time_hrs[time_steps]
     
     # Form the networks
     net_power_0   = power_network(t, systemData)
@@ -709,8 +731,8 @@ if __name__ == "__main__":
     # scenario_options = [H2 option, Zone option, and Profile option]
     # scenario_options = [1, 21, 5]  
     # scenario_options = [2, 21, 5] 
-    # scenario_options = [3, 21, 5] 
-    scenario_options = [3, 21, 9]  
+    scenario_options = [3, 21, 5] 
+    # scenario_options = [3, 21, 9]  
 
 
 
@@ -730,20 +752,34 @@ if __name__ == "__main__":
         'Profile': Profile,
     }
 
-    # print("\nSelected Scenarios:")
-    # for key, value in Scenarios.items():
-    #     print(f"{key}: {value}")
-
 #################################################
 
-    time_steps = 0
-    # time_steps = 1
+    years = ['2025','2030','2035','2040','2045','2050']
+    scenarios = ['FS', 'CT', 'LW', 'ST']
+    
+    year = years[5]
+    scenario = scenarios[2]
+    
+#################################################
+
+    time_steps = 0 
+    # time_steps = 1  ## In case of range hours, will start from = 0
     # time_steps = 2
+    # time_steps = 3
     # time_steps = 12
     
     
     systemData = data_import(Scenarios)
-    multinet = initial_run_OPGF(systemData)
+    
+    # global selected_players
+    # selected_players = get_selected_players('all') # 141 players (not zero-capcity players)
+    # # selected_players = get_selected_players('capacity') # Top 17 players by capacity
+    # # selected_players = get_selected_players('zone') # Top 17 players by zone
+
+    # #### selected_players_df = systemData['Players'][systemData['Players']['id'].isin(selected_players)]
+
+
+    multinet = initial_run_OPGF(time_steps, systemData)
     
     
     print()
@@ -770,7 +806,7 @@ if __name__ == "__main__":
     results = {        
         "Maximum generation capacity": sum(multinet.nets['power'].gen['max_p_mw']),
         "Total Generation": sum(multinet.nets['power'].res_gen['p_mw'])+sum(multinet.nets['power'].res_sgen['p_mw']),
-        "FC Generation": sum(multinet.nets['power'].res_sgen['p_mw']),
+        "G2P Generation": sum(multinet.nets['power'].res_sgen['p_mw']),
         "Other Generations": sum(multinet.nets['power'].res_gen['p_mw']),
     
         "Total Load": sum(multinet.nets['power'].res_load['p_mw']),
@@ -811,18 +847,24 @@ if __name__ == "__main__":
     
     # Group by 'type' and sum the numeric columns
     ele_gens_grouped = ele_gens.groupby('type', as_index=False).sum()
-    ele_gens_grouped.sum()
     
     generation = multinet.nets['power'].res_gen[['p_mw']].copy()
     players_type = systemData['Players'][['type', 'id']].copy()
     generation = generation.merge(players_type, left_index=True, right_on='id')
     generation_by_type = generation.groupby('type')['p_mw'].sum()
+    
     generation_by_type
     generation_by_type.sum()
+
+    ele_gens_grouped['OPFG_gens']=generation_by_type.values
+    ele_gens_grouped.sum()
 
     
     save_opgf_generations(multinet, systemData, output_folder="Output")
 
+
+
+    
 
 
     

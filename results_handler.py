@@ -67,7 +67,10 @@ def save_simulation_results(model, genCapacities, multinet, cost_results, output
 
     total_demand = model.Q_e
     total_gen_gtm = genCapacities[0].sum()
-    total_gen_opf = sum(multinet['nets']['power']['res_gen']['p_mw'])
+    # total_gen_opf = sum(multinet['nets']['power']['res_gen']['p_mw'])
+    gen_opf_wo_g2p = sum(multinet['nets']['power']['res_gen']['p_mw'])
+    gen_g2p = sum(multinet.nets['power'].res_sgen['p_mw'])
+    total_gen_opf = gen_opf_wo_g2p + gen_g2p
 
     # Extract cost and emissions from the dictionary
     cost_GT = cost_results["cost_GT"]

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jan 27 06:05:41 2025
+Created on Sat Mar  1 11:42:51 2025
 
 @author: Mhdella
 """
@@ -16,6 +16,7 @@ from results_handler import *
 from multinet_GB import *
 
 
+
 import warnings
 warnings.filterwarnings('ignore')  # Ignores all warnings
 
@@ -25,14 +26,14 @@ def data_import(Scenarios):
 
     Players_data = pd.read_csv(GBdata_path + 'GB_market_players.csv')
     Economics_data = pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_Players', index_col = 0)
-    # Economics_data = pd.read_excel(GBdata_path + 'GB_Economic_Parameters2.xlsx', sheet_name='Econ_Players', index_col = 0)
 
     Players_economics = pd.concat([Economics_data] * 17, ignore_index=True)
     Players_economics[['id', 'zone_id', 'max_p_mw']] = Players_data[['id', 'zone_id', 'max_p_mw']]
 
     
     systemData = {
-
+        
+        'Year': int(year), 'scenario': scenario,
         'Players':  Players_economics,
         'Economics': Economics_data,
         'Economics_H2': pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_H2', index_col = 0),
@@ -52,8 +53,7 @@ def data_import(Scenarios):
         'Gen Cost': pd.read_csv(GBdata_path + 'GB_genCost.csv'),
         'Bus Names': pd.read_csv(GBdata_path + 'GB_busName.csv'),
         'P2G Data': pd.read_excel(GBdata_path + 'GB_P2G.xlsx', sheet_name=None),
-        'G2G Data': pd.read_excel(GBdata_path + 'GB_G2G.xlsx', sheet_name=None),  
-        
+        'G2G Data': pd.read_excel(GBdata_path + 'GB_G2G.xlsx', sheet_name=None),   
     }
     
     
@@ -82,11 +82,11 @@ def data_import(Scenarios):
     
     
     # systemData['Players']['max_p_mw'] = systemData['Installed capacity'][2025]
-    systemData['Installed capacity'][2050] *= 1.2
+    systemData['Installed capacity'][2050] *= 1.0
 
-    
-    systemData['Scenarios_id'] =Scenarios
-    
+
+    systemData['Scenarios_id'] = Scenarios
+        
     # # Filter out players with zero capacity (2050)
     systemData['Players_2050'] = systemData['Players'][systemData['Players']["max_p_mw"] > 0]
     
@@ -94,33 +94,51 @@ def data_import(Scenarios):
 
     systemData['Q_e'] = sum(multinet_0.nets['power'].load['p_mw'])
     
+    Coupling_scale = 1
+    
+    for key in systemData['P2G Data']:
+        systemData['P2G Data'][key]['Capacity(GW)'] *= Coupling_scale
+    
+    for key in systemData['G2G Data']:
+        systemData['G2G Data'][key]['Capacity(GW)'] *= Coupling_scale
+        
+    
+    systemData['Players_H2'] = pd.read_excel(GBdata_path + 'GB_Economic_Parameters.xlsx', sheet_name='Econ_Players_H2', index_col = 0)
+    
+    
+        
     return systemData
 
 
 
 def variable_list(model, year, data):
+    global ub
     ub = data['Installed capacity'][int(year)] - data['Installed capacity'][2025]
-    def fb(model,i):
-        return (None,ub[i])
+
     
     # Variable list -----------------------------------------------------------
     # Define the list of selected players
     
-    global selected_players 
-    
 
-    # # Extract the IDs of the 2050 players 
-    selected_players = systemData['Players_2050']["id"].tolist() ## 141 players
+    global selected_players
+    selected_players = get_selected_players('all') # 141 players (not zero-capcity players)
+    # selected_players = get_selected_players('capacity') # Top 17 players by capacity
+    # selected_players = get_selected_players('zone') # Top 17 players by zone
 
-    
-    # #Initialize the model's set with the selected players
+    #### selected_players_df = systemData['Players'][systemData['Players']['id'].isin(selected_players)]
+
+
+    # Initialize the model's set with the selected players
     model.p = pyoen.Set(initialize=selected_players)
+
        
-    model.q     = pyoen.Var(model.p)
-    model.I     = pyoen.Var(model.p)
-    model.sigma = pyoen.Var(model.p)
-    model.delta = pyoen.Var(model.p)
-    model.alpha = pyoen.Var(model.p)
+    model.q     = pyoen.Var(model.p, within=NonNegativeReals, initialize=10)
+    model.I     = pyoen.Var(model.p, within=NonNegativeReals, initialize=1)
+    model.sigma = Var(model.p, within=NonNegativeReals, initialize=0)
+    model.delta = Var(model.p, within=NonNegativeReals, initialize=0)
+    model.alpha = Var(model.p, initialize=0)
+    
+
     
     return model
 
@@ -130,10 +148,8 @@ def variable_list(model, year, data):
 def parameter_list(model, year, data):
     # Parameter list ----------------------------------------------------------
     model.years = pyoen.Param(initialize=int(year) - 2025)  # value in 'years'
-    model.rate = pyoen.Param(initialize=0.05)  # value in percent
+    # model.rate = pyoen.Param(initialize=0.05)  # value in percent
 
-    model.AF = pyoen.Param(initialize=((1 + model.rate) ** model.years - 1)
-                           / (model.rate * (1 + model.rate) ** model.years))  # Annuity factor
 
     # Filter the relevant parameters for selected players
     filtered_costs = {i: data['Players']['costs'][i] for i in model.p if i in data['Players']['costs']}
@@ -142,10 +158,15 @@ def parameter_list(model, year, data):
     filtered_lamda = {i: data['Players']['economic_life'][i] for i in model.p if i in data['Players']['economic_life']}
     filtered_k = {i: data['Players']['max_p_mw'][i] for i in model.p if i in data['Players']['max_p_mw']}
     filtered_emissions = {i: data['Players']['emissions'][i] for i in model.p if i in data['Players']['emissions']}
-    filtered_installed_capacity = {
-        i: data['Installed capacity'][int(year)][i] - data['Installed capacity'][2025][i]
-        for i in model.p if i in data['Installed capacity'][int(year)]
-    }
+    filtered_discount_rate = {i: data['Players']['discount_rate'][i] for i in model.p if i in data['Players']['discount_rate']}
+
+    # filtered_installed_capacity = {
+    #     i: data['Installed capacity'][int(year)][i] - data['Installed capacity'][2025][i]
+    #     for i in model.p if i in data['Installed capacity'][int(year)]
+    # }
+
+    filtered_installed_capacity = {i: float(data['Installed capacity'][int(year)][i] - data['Installed capacity'][2025][i])
+                               for i in model.p if i in data['Installed capacity'][int(year)]}
 
     # Initialize the model parameters
     model.c = pyoen.Param(model.p, initialize=filtered_costs)  # value in £/MWh
@@ -155,6 +176,15 @@ def parameter_list(model, year, data):
     model.k = pyoen.Param(model.p, initialize=filtered_k)  # value in MW
     model.emis = pyoen.Param(model.p, initialize=filtered_emissions)  # tonne CO2/ MWh
     model.iMAX = pyoen.Param(model.p, initialize=filtered_installed_capacity)  # in MW
+    model.rate = pyoen.Param(model.p, initialize=filtered_discount_rate)  # value in percent
+
+    # model.AF = pyoen.Param(initialize=((1 + model.rate) ** model.years - 1)
+    #                        / (model.rate * (1 + model.rate) ** model.years))  # Annuity factor
+    
+    model.AF = pyoen.Param(model.p, initialize=lambda model, i:
+                       ((1 + model.rate[i]) ** model.years - 1) /
+                       (model.rate[i] * (1 + model.rate[i]) ** model.years))
+    
 
     # print(data['Installed capacity'][int(year)]-data['Installed capacity'][2025])
      
@@ -163,7 +193,7 @@ def parameter_list(model, year, data):
     # model.Q_e = 22729.35
     # model.Q_e = 112617.51
 
-    model.Q_e = systemData['Q_e'] 
+    model.Q_e = systemData['Q_e']
 
     
     # print(np.sum(data['Power Demand'])[0]) # Check the time period
@@ -183,7 +213,10 @@ def parameter_list(model, year, data):
     # model.pH = pyoen.Param(initialize=(250))
     
 
-    model.CO2 = pyoen.Param(initialize=(100)) #£/tonne C02
+    CO2_penalty = systemData['Carbon Price'].loc[systemData['Carbon Price']['Year'] == int(year), scenario].iloc[0]
+    
+    model.CO2 = pyoen.Param(initialize=(CO2_penalty)) #£/tonne C02
+    # model.CO2 = pyoen.Param(initialize=(100)) #£/tonne C02
     
 
     return model
@@ -192,55 +225,65 @@ def parameter_list(model, year, data):
 
 def complementarity_conditions(model):
     
-    def technical_rule(model,i):
-        return (pyompec.complements(model.q[i] >= 0, 
-                                    model.AF * (model.pE - model.c[i]- model.CO2*model.emis[i]) - model.sigma[i]
-                                    - model.alpha[i] <= 0))
+    
+    def technical_rule(model, i):
+        expr = (model.AF[i] * (model.pE - model.c[i] - model.CO2 * model.emis[i]) 
+            - model.sigma[i] - model.alpha[i])
+        return pyompec.complements(model.q[i] >= 0, expr <= 0)
+    
+    
+    def investment_rule(model, i):
+        expr = (-model.AF[i] * model.phi[i] * model.eps[i] - model.eps[i] *
+                (1 - (model.lamda[i] - model.years) /
+                (model.lamda[i] * (1 + model.rate[i])**model.years)) +
+                model.sigma[i] - model.delta[i])
+        return pyompec.complements(model.I[i] >= 0, expr <= 0)
+    
+       
+    def technical_limit(model, i):
+        expr = (model.q[i] - model.k[i] - model.I[i])
+        return pyompec.complements(model.sigma[i] >= 0, expr <= 0)
+    
 
-    def investment_rule(model,i):
-        return (pyompec.complements(model.I[i] >= 0, 
-                                    (-model.AF * model.phi[i] * model.eps[i]) - model.eps[i] 
-                                    * (1 - (model.lamda[i] - model.years)
-                                       /(model.lamda[i] * (1 + model.rate)** model.years))
-                                    + model.sigma[i] - model.delta[i] <= 0))
-    
-    def technical_limit(model,i):
-        return(pyompec.complements(model.sigma[i] >= 0,
-                                   model.q[i] - model.k[i] - model.I[i] <= 0))
-    
+    def investment_limit(model, i):
+        expr = (model.I[i] - model.iMAX[i])
+        return pyompec.complements(model.delta[i] >= 0, expr <= 0)
 
-    def investment_limit(model,i):
-        return(pyompec.complements(model.delta[i] >= 0,
-                                   model.I[i] - model.iMAX[i] <=0))
-    
-    model.c1 = pyompec.Complementarity(model.p, rule= technical_rule)
-    model.c2 = pyompec.Complementarity(model.p, rule= investment_rule)
-    model.c3 = pyompec.Complementarity(model.p, rule= technical_limit)
-    model.c4 = pyompec.Complementarity(model.p, rule= investment_limit)
-    
+
+    model.c1 = pyompec.Complementarity(model.p, rule=technical_rule)
+    model.c2 = pyompec.Complementarity(model.p, rule=investment_rule)
+    model.c3 = pyompec.Complementarity(model.p, rule=technical_limit)
+    model.c4 = pyompec.Complementarity(model.p, rule=investment_limit)
+
     return model
 
 
 
+# Equality Constraints
 def equality_constraints(model, data):
+
+    model.c6 = pyoen.Constraint(
+        
+        # expr=sum(model.q[i] for i in selected_players) == model.Q_e)
+        
+        # expr=sum(model.q[i] for i in selected_players) - model.Q_e <= 10)
+        
+        # expr=sum(model.q[i] for i in selected_players) - model.Q_e <= 15)
+        
+        expr=sum(model.q[i] for i in selected_players) - model.Q_e <= 0.001 * model.Q_e)
+        
+    # expr=abs(sum(model.q[i] for i in selected_players) - model.Q_e) <= 0.1)
+    
+    
+    model.penalty_over_generation = pyoen.Constraint(
+    expr=(sum(model.q[i] for i in selected_players) - model.Q_e) >= 0)
     
 
-    model.c5 = pyoen.Constraint(
-        expr=sum(model.q[i] for i in selected_players) - model.Q_e == 0)
-
-
-
-    # model.c6 = pyoen.Constraint(expr= sum(model.q[i] for i in data['Players'].index[data['Players']['type']=='meth'].tolist()) +  
-                                #sum(model.q[i] for i in data['Players'].index[data['Players']['type']=='P2G'].tolist()) - 
-                                #sum(model.q[i] for i in data['Players'].index[data['Players']['type']=='CHP'].tolist()) - 
-                                #sum(model.q[i] for i in data['Players'].index[data['Players']['type']=='GT'].tolist()) - 
-                                # -model.Q_g == 0)
-    
-    # model.c7 = pyoen.Constraint(expr= model.q['EZ'] - model.q['FC']  == 0 )
-    
     return model
-    
-    
+
+
+
+
 
 def solver(model):
     
@@ -250,9 +293,22 @@ def solver(model):
     # Solver options --------------------------------------------------------------
     opt = SolverFactory('pathampl', executable='pathampl.exe')
     # opt = SolverFactory('ipopt', executable='ipopt.exe')
-    opt.options['max_iter'] = 10
+    
+    opt.options['max_iter'] = 1000
+    opt.options['tol'] = 1e-4
+    # opt.options['feasibility_tol'] = 1e-2
+    # opt.options['constr_viol_tol'] = 1e-2
+    # opt.options['allow_infeasibilities'] = 'no'  # Strict mode
+    # opt.options['reset'] = 'yes'
+    
+    # opt.options['allow_infeasibilities'] = 'yes'
+
+    
     opt.solve(model, tee=False)
+    
     # model.display()
+    
+    return model
 
 
 
@@ -268,12 +324,17 @@ def game(year, scenario, data):
     complementarity_conditions(model)
     
     equality_constraints(model, data)
-    
+
     solver(model)
+
+    # for i in selected_players:
+    #     print(f"Player: {i} -> q[i]: {pyoen.value(model.q[i])}, k[i]: {pyoen.value(model.k[i])},  iMAX[i]: {pyoen.value(model.iMAX[i])}, I[i]: {pyoen.value(model.I[i])}, delta[i]: {pyoen.value(model.delta[i])}")
     
-    # print_results(model)
-    
+
     return model
+
+
+
 
 
 def initial_run_OPGF(model, systemData):
@@ -286,37 +347,44 @@ def initial_run_OPGF(model, systemData):
     genData['8'] = genCapacities
     systemData['Gen Data']['8'].iloc[selected_players] = genCapacities[0]
     
-    hour_of_day = 1 # Input how many hours the model shall run
+    # hour_of_day = time_steps +1 # In case of range of hours the model shall run
+    hour_of_day = time_steps # Pick an hour for the model shall run
+
     multinet = run_OPGF(hour_of_day, genData,  systemData) # Running the OPGF
     return multinet
 
 
 
-def cost_calc(model):
-    return sum(pyoen.value(model.q[tech] * model.c[tech]) for tech in model.p)
-
-
 
 def cost_check(model, multinet, systemData):
-    cost_GT = cost_calc(model)
+    
     players = systemData['Players']
-
-    # CO2 emissions for GT Model
+    
+    cost_GT = sum(pyoen.value(model.q[tech] * model.c[tech]) for tech in model.p)
+    
+    cost_OPGF = sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['costs'][selected_players]) 
+    
+    # CO2 emissions cost for GT Model
     emission_GT = sum(pyoen.value(model.q[tech] * model.emis[tech]) for tech in model.p)
     co2_cost_GT = emission_GT * pyoen.value(model.CO2)
 
-    # CO2 emissions for OPGF Model
+    # CO2 emissions cost for OPGF Model
     emission_OPGF = sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['emissions'][selected_players])
     co2_cost_OPGF = emission_OPGF * pyoen.value(model.CO2)
 
-    # Emission cost calculation
-    emissionCost = (emission_OPGF +
-                    sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * pyoen.value(model.CO2) * 0.320)
+    # CO2 emissions cost for G2G-CCS 
+    emission_G2G= sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000
+    CO2_cost_G2G = emission_G2G * pyoen.value(model.CO2) * 0.022
 
-    cost_OPGF = (sum(multinet['nets']['power']['res_gen']['p_mw'][selected_players] * players['costs'][selected_players]) +
-                 sum(multinet.nets['gas'].sink['mdot_kg_per_s']) * (14.64 * 3600) / 1000 * 85 +
-                 (multinet.nets['hydrogen'].res_source['mdot_kg_per_s'].sum(skipna=True) * (39.41 * 3600) / 1000) * 110 +
-                 emissionCost)
+    g2g_out = multinet.nets['hydrogen'].res_source['mdot_kg_per_s'][51:].sum(skipna=True) * (39.41 * 3600) / 1000
+    g2g_in = multinet.nets['gas'].res_sink['mdot_kg_per_s'][:34].sum(skipna=True)*(energy_gas*3600)/1000
+    
+    c_g2g = systemData['Players_H2'].loc[systemData['Players_H2']['type'] == 'g2g', 'costs'].values[0]
+    
+    g2gCost= g2g_in * c_g2g + CO2_cost_G2G
+
+    cost_GT = cost_GT + g2gCost
+    cost_OPGF = cost_OPGF + g2gCost 
     
     return {
         "cost_GT": cost_GT,
@@ -325,20 +393,47 @@ def cost_check(model, multinet, systemData):
         "co2_cost_GT": co2_cost_GT,
         "emission_OPGF": emission_OPGF,
         "co2_cost_OPGF": co2_cost_OPGF
-           }
+            }
 
 
 
     
 def update_GT(year, scenario, multinet, systemData):
     systemData['Players']['max_p_mw'][selected_players] = multinet['nets']['power']['res_gen']['p_mw'][selected_players] #do the change here
-    # systemData['Players']['max_p_mw'][357] = abs(sum(multinet.nets['hydrogen'].res_ext_grid['mdot_kg_per_s'])*(39.41*3600)/(1000))
 
     model = game(year, scenario, systemData)
-    
-    # multinet['nets']['power']['gen']['p_mw'][selected_players] = pd.Series(model.q.extract_values())
-    
+        
     return model
+
+
+
+def get_selected_players(selection_option):
+    # Define the list of selected players
+    # Option 1: Top 17 players by capacity
+    top17_capacity_players = (systemData['Players_2050']
+                              .nlargest(17, 'max_p_mw')['id']
+                              .tolist())
+    
+    # Option 2: Top 17 players by zone
+    top17_zone_players = (systemData['Players']
+                          .groupby('zone_id', group_keys=False)
+                          .apply(lambda x: x.nlargest(1, 'max_p_mw'))
+                          ['id']
+                          .tolist())
+    
+    # Option 3: All players (141 players)
+    all_players = systemData['Players_2050']['id'].tolist() 
+    
+    if selection_option == 'capacity': # Top 17 players by capacity
+        return top17_capacity_players
+    elif selection_option == 'zone': # Top 17 players by zone
+        return top17_zone_players
+    elif selection_option == 'all': # 141 players
+        return all_players
+    else:
+        raise ValueError("Invalid selection_option. Choose from 'capacity', 'zone', or 'all'.")
+        
+
 
 
 
@@ -374,8 +469,8 @@ if __name__ == "__main__":
     # # scenario_options = [H2 option, Zone option, and Profile option]
     # scenario_options = [1, 21, 5]  
     # scenario_options = [2, 21, 5] 
-    # scenario_options = [3, 21, 5] 
-    scenario_options = [3, 21, 9]  
+    scenario_options = [3, 21, 5] 
+    # scenario_options = [3, 21, 9]  
 
 
     # Extract the corresponding scenario values
@@ -394,11 +489,6 @@ if __name__ == "__main__":
         'Profile': Profile,
     }
 
-    # print("\nSelected Scenarios:")
-    # for key, value in Scenarios.items():
-    #     print(f"{key}: {value}")
-    
-    
 
 #################################################
 
@@ -413,11 +503,14 @@ if __name__ == "__main__":
     time_steps = 0
     # time_steps = 1
     # time_steps = 2
+    # time_steps = 3
     # time_steps = 12
+    # time_steps = 19
+    # time_steps = 23
+
     
     
     systemData = data_import(Scenarios)
-
 
     
     # Step 1: Run the GT model with initial conditions
@@ -456,7 +549,3 @@ if __name__ == "__main__":
     
     save_simulation_results(model, genCapacities, multinet, cost_results, output_folder="Output")
 
-
-
-    
-    
